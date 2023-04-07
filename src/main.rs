@@ -124,7 +124,7 @@ impl Trove {
         // create symlink to home dir
         if let Some(mut home) = dirs_next::home_dir() {
             home.push(PathBuf::from(".trove"));
-            match symlink::symlink_file(&self.config.path, home) {
+            match symlink::symlink_file(get_true_path(&self.config.path), home) {
                 Ok(_) => Ok(()),
                 Err(_) => {
                     println!(
