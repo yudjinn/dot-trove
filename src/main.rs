@@ -209,11 +209,11 @@ impl Trove {
     fn deploy_command(&self, category: &Option<String>, name: &Option<String>) -> Result<()> {
         match (category, name) {
             (None, None) => {
-                let mut from_path = String::new();
+                let mut from_path = PathBuf::new();
                 for e in &self.entries {
                     from_path.clear();
-                    from_path = self.config.store_path.clone();
-                    from_path.push_str(&e.name);
+                    from_path = get_true_path(&self.config.store_path);
+                    from_path.push(&e.name);
                     if let Err(_) = symlink::symlink_auto(&from_path, get_true_path(&e.host_path)) {
                         println!("Could not deploy {}", &e.name);
                     }
@@ -221,8 +221,8 @@ impl Trove {
             }
             (None, Some(n)) => {
                 if let Some(entry) = self.find_entry_by_name(n) {
-                    let mut from_path = self.config.store_path.clone();
-                    from_path.push_str(&entry.name);
+                    let mut from_path = get_true_path(&self.config.store_path);
+                    from_path.push(&entry.name);
                     if let Err(_) =
                         symlink::symlink_auto(&from_path, get_true_path(&entry.host_path))
                     {
@@ -233,12 +233,12 @@ impl Trove {
                 }
             }
             (Some(c), None) => {
-                let mut from_path = String::new();
+                let mut from_path = PathBuf::new();
                 if let Some(entries) = self.find_entry_by_category(c) {
                     for e in entries {
                         from_path.clear();
-                        from_path = self.config.store_path.clone();
-                        from_path.push_str(&e.name);
+                        from_path = get_true_path(&self.config.store_path);
+                        from_path.push(&e.name);
                         if let Err(_) =
                             symlink::symlink_auto(&from_path, get_true_path(&e.host_path))
                         {
