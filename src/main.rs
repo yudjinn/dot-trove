@@ -1,6 +1,6 @@
 use std::{collections::HashSet, io::Write, path::PathBuf};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
@@ -15,17 +15,17 @@ struct Cli {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct Entry {
     name: String,
-    host_path: PathBuf,
+    host_path: String,
     categories: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TroveConfig {
-    path: PathBuf,
-    store_path: PathBuf,
+    path: String,
+    store_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Trove {
     config: TroveConfig,
     entries: HashSet<Entry>,
@@ -58,9 +58,9 @@ impl Trove {
     pub fn find_entry_by_path(&self, path: &PathBuf) -> Option<Entry> {
         for e in &self.entries {
             let mut p = self.config.store_path.clone();
-            p.push(e.name.clone());
+            p.push_str(&e.name.clone());
 
-            if &p == path {
+            if &get_true_path(&p) == path {
                 return Some(e.clone());
             }
         }
@@ -109,16 +109,16 @@ impl Trove {
         store.push("store");
         let trove = Trove {
             config: TroveConfig {
-                path: conf,
-                store_path: store.clone(),
+                path: get_rel_path(&conf),
+                store_path: get_rel_path(&store.clone()),
             },
             entries: HashSet::new(),
         };
 
         let cont = serde_json::to_string_pretty(&trove)?;
-        json_to_file(&trove.config.path, &cont)?;
+        json_to_file(&get_true_path(&trove.config.path), &cont)?;
 
-        std::fs::DirBuilder::new().create(store)?;
+        if let Err(_) = std::fs::DirBuilder::new().create(store) {}
 
         trove.create_symlink()?;
 
@@ -127,7 +127,7 @@ impl Trove {
 
     pub fn save(&self) -> Result<()> {
         let cont = serde_json::to_string_pretty(self)?;
-        json_to_file(&self.config.path, &cont)?;
+        json_to_file(&get_true_path(&self.config.path), &cont)?;
 
         return Ok(());
     }
@@ -139,7 +139,10 @@ impl Trove {
             match symlink::symlink_file(&self.config.path, home) {
                 Ok(_) => Ok(()),
                 Err(_) => {
-                    println!("Already initialized to: {}", &self.config.path.display());
+                    println!(
+                        "Already initialized to: {}",
+                        get_true_path(&self.config.path).display()
+                    );
                     Ok(())
                 }
             }
@@ -169,10 +172,19 @@ impl Trove {
             return Err(anyhow!("Entry with that path already exists."));
         }
         let host_path = get_absolute_path(&path)?;
+        let mut host_path_str = host_path.to_string_lossy().to_string();
+        if let Some(home) = dirs_next::home_dir() {
+            let clean = home.to_string_lossy().to_string();
+            if host_path_str.contains(&clean) {
+                host_path_str = PathBuf::from(host_path_str.replace(&clean, "$HOME"))
+                    .to_string_lossy()
+                    .to_string();
+            }
+        }
 
         let entry = Entry {
             name: name.into(),
-            host_path,
+            host_path: host_path_str,
             categories: cats,
         };
 
@@ -190,6 +202,28 @@ impl Trove {
     }
 }
 
+fn get_rel_path(path: &PathBuf) -> String {
+    let mut path_str = path.to_string_lossy().to_string();
+    if let Some(home) = dirs_next::home_dir() {
+        let clean = home.to_string_lossy().to_string();
+        if path_str.contains(&clean) {
+            path_str = PathBuf::from(path_str.replace(&clean, "$HOME"))
+                .to_string_lossy()
+                .to_string();
+        }
+    }
+    return path_str;
+}
+
+fn get_true_path(path: &String) -> PathBuf {
+    if let Some(home) = dirs_next::home_dir() {
+        let clean = home.to_string_lossy().to_string();
+        if path.contains("$HOME") {
+            return PathBuf::from(path.replace("$HOME", &clean));
+        }
+    }
+    return PathBuf::from(path);
+}
 #[derive(Subcommand, Debug)]
 enum Command {
     Init {
@@ -247,7 +281,7 @@ fn main() -> Result<()> {
             trove.create_symlink()?;
         } else {
             // make a new trove
-            let trove = Trove::create(abs)?;
+            let _trove = Trove::create(abs)?;
         }
         return Ok(());
     }
@@ -260,10 +294,12 @@ fn main() -> Result<()> {
                 (None, Some(n)) => {
                     if let Some(e) = &trove.find_entry_by_name(n) {
                         trove.remove_entry(e)?;
-                        symlink::remove_symlink_auto(&e.host_path)?;
+                        if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {
+                            println!("Symlink does not exists, continuing...",);
+                        }
                         let mut from_path = trove.config.store_path.clone();
-                        from_path.push(&e.name);
-                        std::fs::rename(from_path, &e.host_path)?;
+                        from_path.push_str(&e.name);
+                        std::fs::rename(from_path, get_true_path(&e.host_path))?;
                         return Ok(());
                     }
                 }
@@ -271,10 +307,12 @@ fn main() -> Result<()> {
                     let abs = get_absolute_path(&p)?;
                     if let Some(e) = &trove.find_entry_by_path(&abs) {
                         trove.remove_entry(e)?;
-                        symlink::remove_symlink_auto(&e.host_path)?;
+                        if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {
+                            println!("Symlink does not exists, continuing...",);
+                        }
                         let mut from_path = trove.config.store_path.clone();
-                        from_path.push(&e.name);
-                        std::fs::rename(from_path, &e.host_path)?;
+                        from_path.push_str(&e.name);
+                        std::fs::rename(from_path, get_true_path(&e.host_path))?;
                         return Ok(());
                     }
                 }
@@ -285,13 +323,14 @@ fn main() -> Result<()> {
         Command::Deploy { category, name } => {
             match (category, name) {
                 (None, None) => {
-                    let mut from_path = PathBuf::new();
+                    let mut from_path = String::new();
                     for e in &trove.entries {
                         from_path.clear();
                         from_path = trove.config.store_path.clone();
-                        from_path.push(&e.name);
-                        if let Ok(_) = symlink::symlink_auto(&from_path, &e.host_path) {
-                        } else {
+                        from_path.push_str(&e.name);
+                        if let Err(_) =
+                            symlink::symlink_auto(&from_path, get_true_path(&e.host_path))
+                        {
                             println!("Could not deploy {}", &e.name);
                         }
                     }
@@ -299,9 +338,10 @@ fn main() -> Result<()> {
                 (None, Some(n)) => {
                     if let Some(entry) = trove.find_entry_by_name(n) {
                         let mut from_path = trove.config.store_path.clone();
-                        from_path.push(&entry.name);
-                        if let Ok(_) = symlink::symlink_auto(&from_path, &entry.host_path) {
-                        } else {
+                        from_path.push_str(&entry.name);
+                        if let Err(_) =
+                            symlink::symlink_auto(&from_path, get_true_path(&entry.host_path))
+                        {
                             println!("Could not deploy {}", &entry.name);
                         }
                     } else {
@@ -309,14 +349,15 @@ fn main() -> Result<()> {
                     }
                 }
                 (Some(c), None) => {
-                    let mut from_path = PathBuf::new();
+                    let mut from_path = String::new();
                     if let Some(entries) = trove.find_entry_by_category(c) {
                         for e in entries {
                             from_path.clear();
                             from_path = trove.config.store_path.clone();
-                            from_path.push(&e.name);
-                            if let Ok(_) = symlink::symlink_auto(&from_path, &e.host_path) {
-                            } else {
+                            from_path.push_str(&e.name);
+                            if let Err(_) =
+                                symlink::symlink_auto(&from_path, get_true_path(&e.host_path))
+                            {
                                 println!("Could not deploy {}", &e.name);
                             }
                         }
@@ -329,7 +370,39 @@ fn main() -> Result<()> {
 
             return Ok(());
         }
-        Command::Pack { category, name } => todo!(),
+        Command::Pack { category, name } => {
+            match (category, name) {
+                (None, None) => {
+                    for e in &trove.entries {
+                        if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {}
+                    }
+                }
+                (None, Some(n)) => {
+                    if let Some(entry) = trove.find_entry_by_name(n) {
+                        if let Err(_) =
+                            symlink::remove_symlink_auto(get_true_path(&entry.host_path))
+                        {
+                        }
+                    } else {
+                        return Err(anyhow!("No entry found by that name."));
+                    }
+                }
+                (Some(c), None) => {
+                    if let Some(entries) = trove.find_entry_by_category(c) {
+                        for e in entries {
+                            if let Err(_) =
+                                symlink::remove_symlink_auto(get_true_path(&e.host_path))
+                            {
+                            }
+                        }
+                    } else {
+                        return Err(anyhow!("No entries found."));
+                    }
+                }
+                (Some(_), Some(_)) => return Err(anyhow!("Please specify only one criteria.")),
+            }
+            return Ok(());
+        }
         Command::Status => {
             println!("{:?}", &trove);
             return Ok(());
@@ -340,7 +413,7 @@ fn main() -> Result<()> {
             categories,
         } => {
             let from_path = get_absolute_path(&path)?;
-            let mut to_path = trove.config.store_path.clone();
+            let mut to_path = get_true_path(&trove.config.store_path);
             to_path.push(name);
             trove.add_entry(path.clone(), name, categories.clone())?;
             std::fs::rename(&from_path, &to_path)?;
