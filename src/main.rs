@@ -45,7 +45,6 @@ impl Trove {
             let mut p = self.config.store_path.clone();
             p.push_str("/");
             p.push_str(&e.name.clone());
-            let t = get_true_path(&p);
 
             if &get_true_path(&p) == path {
                 return Some(e.clone());
@@ -85,7 +84,9 @@ impl Trove {
             let trove: Trove = serde_json::from_value(json)?;
             return Ok(trove);
         }
-        return Err(anyhow!("Could not find a valid .trove file."));
+        return Err(anyhow!(
+            "Could not find a valid .trove file. \r\n Run `trove init <path>` to begin."
+        ));
     }
 
     pub fn create(path: PathBuf) -> Result<Self> {
