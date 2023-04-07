@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    // command to run
     #[command(subcommand)]
     command: Command,
 }
@@ -31,20 +30,6 @@ struct Trove {
     entries: HashSet<Entry>,
 }
 
-pub fn json_from_file(path: &PathBuf) -> Result<serde_json::Value> {
-    let file = std::fs::File::open(path)?;
-
-    let json = serde_json::from_reader(file).expect("JSON was misformatted.");
-
-    return Ok(json);
-}
-
-pub fn json_to_file(path: &PathBuf, contents: &str) -> Result<()> {
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(contents.as_bytes())?;
-    return Ok(());
-}
-
 impl Trove {
     pub fn find_entry_by_name(&self, name: &str) -> Option<Entry> {
         for e in &self.entries {
@@ -58,7 +43,9 @@ impl Trove {
     pub fn find_entry_by_path(&self, path: &PathBuf) -> Option<Entry> {
         for e in &self.entries {
             let mut p = self.config.store_path.clone();
+            p.push_str("/");
             p.push_str(&e.name.clone());
+            let t = get_true_path(&p);
 
             if &get_true_path(&p) == path {
                 return Some(e.clone());
@@ -109,8 +96,8 @@ impl Trove {
         store.push("store");
         let trove = Trove {
             config: TroveConfig {
-                path: get_rel_path(&conf),
-                store_path: get_rel_path(&store.clone()),
+                path: get_relative_path(&conf),
+                store_path: get_relative_path(&store.clone()),
             },
             entries: HashSet::new(),
         };
@@ -120,7 +107,7 @@ impl Trove {
 
         if let Err(_) = std::fs::DirBuilder::new().create(store) {}
 
-        trove.create_symlink()?;
+        trove.create_conf_symlink()?;
 
         return Ok(trove);
     }
@@ -132,7 +119,7 @@ impl Trove {
         return Ok(());
     }
 
-    fn create_symlink(&self) -> Result<()> {
+    fn create_conf_symlink(&self) -> Result<()> {
         // create symlink to home dir
         if let Some(mut home) = dirs_next::home_dir() {
             home.push(PathBuf::from(".trove"));
@@ -200,30 +187,135 @@ impl Trove {
         self.save()?;
         Ok(())
     }
+
+    fn add_command(
+        &mut self,
+        path: &PathBuf,
+        name: &String,
+        categories: &Option<String>,
+    ) -> Result<()> {
+        let from_path = get_absolute_path(&path)?;
+        let mut to_path = get_true_path(&self.config.store_path);
+        to_path.push(name);
+        self.add_entry(from_path.clone(), name, categories.clone())?;
+        std::fs::rename(&from_path, &to_path)?;
+
+        symlink::symlink_auto(&to_path, &from_path)?;
+
+        return Ok(());
+    }
+
+    fn deploy_command(&self, category: &Option<String>, name: &Option<String>) -> Result<()> {
+        match (category, name) {
+            (None, None) => {
+                let mut from_path = String::new();
+                for e in &self.entries {
+                    from_path.clear();
+                    from_path = self.config.store_path.clone();
+                    from_path.push_str(&e.name);
+                    if let Err(_) = symlink::symlink_auto(&from_path, get_true_path(&e.host_path)) {
+                        println!("Could not deploy {}", &e.name);
+                    }
+                }
+            }
+            (None, Some(n)) => {
+                if let Some(entry) = self.find_entry_by_name(n) {
+                    let mut from_path = self.config.store_path.clone();
+                    from_path.push_str(&entry.name);
+                    if let Err(_) =
+                        symlink::symlink_auto(&from_path, get_true_path(&entry.host_path))
+                    {
+                        println!("Could not deploy {}", &entry.name);
+                    }
+                } else {
+                    return Err(anyhow!("No entry found by that name."));
+                }
+            }
+            (Some(c), None) => {
+                let mut from_path = String::new();
+                if let Some(entries) = self.find_entry_by_category(c) {
+                    for e in entries {
+                        from_path.clear();
+                        from_path = self.config.store_path.clone();
+                        from_path.push_str(&e.name);
+                        if let Err(_) =
+                            symlink::symlink_auto(&from_path, get_true_path(&e.host_path))
+                        {
+                            println!("Could not deploy {}", &e.name);
+                        }
+                    }
+                } else {
+                    return Err(anyhow!("No entries found."));
+                }
+            }
+            (Some(_), Some(_)) => return Err(anyhow!("Please specify only one criteria.")),
+        }
+
+        return Ok(());
+    }
+
+    fn pack_command(&self, category: &Option<String>, name: &Option<String>) -> Result<()> {
+        match (category, name) {
+            (None, None) => {
+                for e in &self.entries {
+                    if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {}
+                }
+            }
+            (None, Some(n)) => {
+                if let Some(entry) = self.find_entry_by_name(n) {
+                    if let Err(_) = symlink::remove_symlink_auto(get_true_path(&entry.host_path)) {}
+                } else {
+                    return Err(anyhow!("No entry found by that name."));
+                }
+            }
+            (Some(c), None) => {
+                if let Some(entries) = self.find_entry_by_category(c) {
+                    for e in entries {
+                        if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {}
+                    }
+                } else {
+                    return Err(anyhow!("No entries found."));
+                }
+            }
+            (Some(_), Some(_)) => return Err(anyhow!("Please specify only one criteria.")),
+        }
+        return Ok(());
+    }
+
+    fn remove_command(&mut self, path: &Option<PathBuf>, name: &Option<String>) -> Result<()> {
+        match (path, name) {
+            (None, None) => return Err(anyhow!("Need criteria to remove by.")),
+            (None, Some(n)) => {
+                if let Some(e) = &self.find_entry_by_name(n) {
+                    self.remove_entry(e)?;
+                    if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {
+                        println!("Symlink does not exists, continuing...",);
+                    }
+                    let mut from_path = get_true_path(&self.config.store_path);
+                    from_path.push(&e.name);
+                    std::fs::rename(from_path, get_true_path(&e.host_path))?;
+                    return Ok(());
+                }
+            }
+            (Some(p), None) => {
+                let abs = get_absolute_path(&p)?;
+                if let Some(e) = &self.find_entry_by_path(&abs) {
+                    self.remove_entry(e)?;
+                    if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {
+                        println!("Symlink does not exists, continuing...",);
+                    }
+                    let mut from_path = get_true_path(&self.config.store_path);
+                    from_path.push(&e.name);
+                    std::fs::rename(from_path, get_true_path(&e.host_path))?;
+                    return Ok(());
+                }
+            }
+            (Some(_), Some(_)) => return Err(anyhow!("Please specify only one criteria.")),
+        }
+        return Err(anyhow!("Entry doesn't exists."));
+    }
 }
 
-fn get_rel_path(path: &PathBuf) -> String {
-    let mut path_str = path.to_string_lossy().to_string();
-    if let Some(home) = dirs_next::home_dir() {
-        let clean = home.to_string_lossy().to_string();
-        if path_str.contains(&clean) {
-            path_str = PathBuf::from(path_str.replace(&clean, "$HOME"))
-                .to_string_lossy()
-                .to_string();
-        }
-    }
-    return path_str;
-}
-
-fn get_true_path(path: &String) -> PathBuf {
-    if let Some(home) = dirs_next::home_dir() {
-        let clean = home.to_string_lossy().to_string();
-        if path.contains("$HOME") {
-            return PathBuf::from(path.replace("$HOME", &clean));
-        }
-    }
-    return PathBuf::from(path);
-}
 #[derive(Subcommand, Debug)]
 enum Command {
     Init {
@@ -256,16 +348,6 @@ enum Command {
     Status,
 }
 
-fn get_absolute_path(rel: &PathBuf) -> Result<PathBuf> {
-    let mut path = std::env::current_dir()?;
-    path.push(rel);
-    // this also Err if path doesn't exist
-    match std::fs::canonicalize(path) {
-        Ok(r) => return Ok(r),
-        Err(_) => return Err(anyhow!("Path does not exist or isn't a directory.")),
-    }
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -278,7 +360,7 @@ fn main() -> Result<()> {
         if let Ok(targ) = get_absolute_path(&conf) {
             // trove exists, just create symlink
             let trove = Trove::load(Some(targ))?;
-            trove.create_symlink()?;
+            trove.create_conf_symlink()?;
         } else {
             // make a new trove
             let _trove = Trove::create(abs)?;
@@ -287,122 +369,11 @@ fn main() -> Result<()> {
     }
     // get trove
     let mut trove = Trove::load(None)?;
+    // run normal command workflows
     match &cli.command {
-        Command::Remove { path, name } => {
-            match (path, name) {
-                (None, None) => return Err(anyhow!("Need criteria to remove by.")),
-                (None, Some(n)) => {
-                    if let Some(e) = &trove.find_entry_by_name(n) {
-                        trove.remove_entry(e)?;
-                        if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {
-                            println!("Symlink does not exists, continuing...",);
-                        }
-                        let mut from_path = trove.config.store_path.clone();
-                        from_path.push_str(&e.name);
-                        std::fs::rename(from_path, get_true_path(&e.host_path))?;
-                        return Ok(());
-                    }
-                }
-                (Some(p), None) => {
-                    let abs = get_absolute_path(&p)?;
-                    if let Some(e) = &trove.find_entry_by_path(&abs) {
-                        trove.remove_entry(e)?;
-                        if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {
-                            println!("Symlink does not exists, continuing...",);
-                        }
-                        let mut from_path = trove.config.store_path.clone();
-                        from_path.push_str(&e.name);
-                        std::fs::rename(from_path, get_true_path(&e.host_path))?;
-                        return Ok(());
-                    }
-                }
-                (Some(_), Some(_)) => return Err(anyhow!("Please specify only one criteria.")),
-            }
-            return Err(anyhow!("Entry doesn't exists."));
-        }
-        Command::Deploy { category, name } => {
-            match (category, name) {
-                (None, None) => {
-                    let mut from_path = String::new();
-                    for e in &trove.entries {
-                        from_path.clear();
-                        from_path = trove.config.store_path.clone();
-                        from_path.push_str(&e.name);
-                        if let Err(_) =
-                            symlink::symlink_auto(&from_path, get_true_path(&e.host_path))
-                        {
-                            println!("Could not deploy {}", &e.name);
-                        }
-                    }
-                }
-                (None, Some(n)) => {
-                    if let Some(entry) = trove.find_entry_by_name(n) {
-                        let mut from_path = trove.config.store_path.clone();
-                        from_path.push_str(&entry.name);
-                        if let Err(_) =
-                            symlink::symlink_auto(&from_path, get_true_path(&entry.host_path))
-                        {
-                            println!("Could not deploy {}", &entry.name);
-                        }
-                    } else {
-                        return Err(anyhow!("No entry found by that name."));
-                    }
-                }
-                (Some(c), None) => {
-                    let mut from_path = String::new();
-                    if let Some(entries) = trove.find_entry_by_category(c) {
-                        for e in entries {
-                            from_path.clear();
-                            from_path = trove.config.store_path.clone();
-                            from_path.push_str(&e.name);
-                            if let Err(_) =
-                                symlink::symlink_auto(&from_path, get_true_path(&e.host_path))
-                            {
-                                println!("Could not deploy {}", &e.name);
-                            }
-                        }
-                    } else {
-                        return Err(anyhow!("No entries found."));
-                    }
-                }
-                (Some(_), Some(_)) => return Err(anyhow!("Please specify only one criteria.")),
-            }
-
-            return Ok(());
-        }
-        Command::Pack { category, name } => {
-            match (category, name) {
-                (None, None) => {
-                    for e in &trove.entries {
-                        if let Err(_) = symlink::remove_symlink_auto(get_true_path(&e.host_path)) {}
-                    }
-                }
-                (None, Some(n)) => {
-                    if let Some(entry) = trove.find_entry_by_name(n) {
-                        if let Err(_) =
-                            symlink::remove_symlink_auto(get_true_path(&entry.host_path))
-                        {
-                        }
-                    } else {
-                        return Err(anyhow!("No entry found by that name."));
-                    }
-                }
-                (Some(c), None) => {
-                    if let Some(entries) = trove.find_entry_by_category(c) {
-                        for e in entries {
-                            if let Err(_) =
-                                symlink::remove_symlink_auto(get_true_path(&e.host_path))
-                            {
-                            }
-                        }
-                    } else {
-                        return Err(anyhow!("No entries found."));
-                    }
-                }
-                (Some(_), Some(_)) => return Err(anyhow!("Please specify only one criteria.")),
-            }
-            return Ok(());
-        }
+        Command::Remove { path, name } => trove.remove_command(path, name),
+        Command::Deploy { category, name } => trove.deploy_command(category, name),
+        Command::Pack { category, name } => trove.pack_command(category, name),
         Command::Status => {
             println!("{:?}", &trove);
             return Ok(());
@@ -411,17 +382,58 @@ fn main() -> Result<()> {
             path,
             name,
             categories,
-        } => {
-            let from_path = get_absolute_path(&path)?;
-            let mut to_path = get_true_path(&trove.config.store_path);
-            to_path.push(name);
-            trove.add_entry(path.clone(), name, categories.clone())?;
-            std::fs::rename(&from_path, &to_path)?;
-
-            symlink::symlink_auto(&to_path, &from_path)?;
-
-            return Ok(());
-        }
+        } => trove.add_command(path, name, categories),
         _ => unreachable!("Invalid Command"),
     }
+}
+
+//util functions
+pub fn json_from_file(path: &PathBuf) -> Result<serde_json::Value> {
+    let file = std::fs::File::open(path)?;
+
+    let json = serde_json::from_reader(file).expect("JSON was misformatted.");
+
+    return Ok(json);
+}
+
+pub fn json_to_file(path: &PathBuf, contents: &str) -> Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(contents.as_bytes())?;
+    return Ok(());
+}
+
+pub fn get_absolute_path(rel: &PathBuf) -> Result<PathBuf> {
+    // converts from relative path to absolute
+    let mut path = std::env::current_dir()?;
+    path.push(rel);
+    // this also Err if path doesn't exist
+    match std::fs::canonicalize(path) {
+        Ok(r) => return Ok(r),
+        Err(_) => return Err(anyhow!("Path does not exist or isn't a directory.")),
+    }
+}
+
+pub fn get_true_path(path: &String) -> PathBuf {
+    // converts absolute paths with $HOME shorthands to full paths
+    if let Some(home) = dirs_next::home_dir() {
+        let clean = home.to_string_lossy().to_string();
+        if path.contains("$HOME") {
+            return PathBuf::from(path.replace("$HOME", &clean));
+        }
+    }
+    return PathBuf::from(path);
+}
+
+fn get_relative_path(path: &PathBuf) -> String {
+    // converts full paths to relative paths with $HOME shorthands
+    let mut path_str = path.to_string_lossy().to_string();
+    if let Some(home) = dirs_next::home_dir() {
+        let clean = home.to_string_lossy().to_string();
+        if path_str.contains(&clean) {
+            path_str = PathBuf::from(path_str.replace(&clean, "$HOME"))
+                .to_string_lossy()
+                .to_string();
+        }
+    }
+    return path_str;
 }
