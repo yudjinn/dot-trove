@@ -21,3 +21,4 @@ easy deployment/removal process.
 
 ### Future improvements:
  - have an enabled flag on each entry and have status show green/red for each entry whether they are active
+ - make `init` update the config `path` and `store_path` values correctly.
