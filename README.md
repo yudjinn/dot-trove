@@ -1,11 +1,11 @@
 # .trove is a CLI tool used to manage dotfiles.
-trove is intended to be used alongside a repository, but also works fine if initialized in a standard directory.
+.trove is intended to be used alongside a repository, but also works fine if initialized in a standard directory.
 
 It gives you the ability to map, store, and version control (if used in a git repo) your dotfiles, as well as an
 easy deployment/removal process.
 
 ## Usage:
-`trove` is the baseline executable. Invoking will give help messages, as will using `--help` on any command.
+`dot-trove` is the baseline executable. Invoking will give help messages, as will using `--help` on any command.
 ### Commands:
  - `init <PATH>` : initializes a trove and store. 
     If one already exists, it allows trove to find the store for other commands
